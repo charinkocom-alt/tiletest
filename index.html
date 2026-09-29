@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A4 敷き詰めPDFメーカー</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#f6f5f1;--card:#fff;--tx:#1d1d1b;--mu:#6b6a65;--ac:#2f6f5e;--acx:#fff;--bd:#dcdad3}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#161615;--card:#222220;--tx:#f0efea;--mu:#9a9992;--ac:#5bbf9f;--acx:#10231d;--bd:#3a3a37}}
+:root[data-theme="dark"]{--bg:#161615;--card:#222220;--tx:#f0efea;--mu:#9a9992;--ac:#5bbf9f;--acx:#10231d;--bd:#3a3a37}
+*,*:before,*:after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.5 -apple-system,"Hiragino Sans","Noto Sans JP",sans-serif}
+main{max-width:520px;margin:0 auto;padding:16px}
+h1{font-size:1.25rem;margin:4px 0 12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:12px}
+label{display:block;font-size:.85rem;color:var(--mu);margin-bottom:4px}
+input[type=number]{width:100%;font-size:1.1rem;padding:10px;border:1px solid var(--bd);border-radius:10px;background:var(--bg);color:var(--tx)}
+.row{display:flex;gap:10px}.row>div{flex:1}
+.pick{display:block;text-align:center;padding:16px;border:2px dashed var(--bd);border-radius:12px;color:var(--mu);cursor:pointer}
+.pick img{max-width:100%;max-height:140px;display:block;margin:0 auto 6px;border-radius:6px}
+button{width:100%;font-size:1.05rem;font-weight:600;padding:14px;border:0;border-radius:12px;background:var(--ac);color:var(--acx)}
+button:disabled{opacity:.4}
+.chk{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.95rem}
+#info{font-weight:600;margin:0 0 8px}
+#prev{background:#fff;border:1px solid var(--bd);margin:0 auto;position:relative;width:100%;aspect-ratio:210/297;overflow:hidden}
+#prev div{position:absolute;background:rgba(47,111,94,.25);border:1px solid #2f6f5e}
+#msg{font-size:.9rem;color:var(--mu);margin:8px 0 0;min-height:1.3em}
+</style>
+</head>
+<body>
+<main>
+<h1>A4 敷き詰めPDFメーカー</h1>
+
+<div class="card">
+<label class="pick" for="f"><span id="ph">📷 タップして画像を選ぶ</span></label>
+<input id="f" type="file" accept="image/*" hidden>
+</div>
+
+<div class="card">
+<div class="row">
+<div><label>横（cm）</label><input id="w" type="number" inputmode="decimal" step="0.1" min="0.5" value="5"></div>
+<div><label>縦（cm）</label><input id="h" type="number" inputmode="decimal" step="0.1" min="0.5" value="5"></div>
+</div>
+<div class="row" style="margin-top:10px">
+<div><label>用紙の余白（cm）</label><input id="m" type="number" inputmode="decimal" step="0.1" min="0" value="0.5"></div>
+<div><label>画像の間隔（cm）</label><input id="g" type="number" inputmode="decimal" step="0.1" min="0" value="0"></div>
+</div>
+<label class="chk"><input id="rot" type="checkbox" checked> 90°回転も使って枚数を最大にする</label>
+<label class="chk"><input id="cut" type="checkbox"> 切り取り用の細い枠線を入れる</label>
+</div>
+
+<div class="card">
+<p id="info">画像を選んでください</p>
+<div id="prev"></div>
+</div>
+
+<button id="go" disabled>PDFを生成</button>
+<p id="msg"></p>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const PW=210,PH=297; // mm
+let img=null;
+
+function layout(){
+  const w=parseFloat($('w').value)*10,h=parseFloat($('h').value)*10,
+        m=(parseFloat($('m').value)||0)*10,g=(parseFloat($('g').value)||0)*10;
+  if(!(w>0&&h>0)) return null;
+  const aw=PW-2*m,ah=PH-2*m;
+  const fit=(iw,ih)=>{
+    const c=Math.floor((aw+g)/(iw+g)),r=Math.floor((ah+g)/(ih+g));
+    return {c:Math.max(c,0),r:Math.max(r,0),iw,ih,rotated:false};
+  };
+  let a=fit(w,h);
+  if($('rot').checked){
+    const b=fit(h,w); b.rotated=true;
+    if(b.c*b.r>a.c*a.r) a=b;
+  }
+  a.m=m;a.g=g;a.n=a.c*a.r;a.w=w;a.h=h;
+  return a;
+}
+
+function update(){
+  const L=layout(), p=$('prev'); p.innerHTML='';
+  if(!L||L.n===0){
+    $('info').textContent=L?'このサイズはA4に入りません':'サイズを入力してください';
+    $('go').disabled=true; return;
+  }
+  $('info').textContent=`A4 1枚に ${L.n} 個（${L.c}列 × ${L.r}行${L.rotated?'・90°回転':''}）`;
+  const s=100/PW; // % per mm
+  const totW=L.c*L.iw+(L.c-1)*L.g, totH=L.r*L.ih+(L.r-1)*L.g;
+  const ox=(PW-totW)/2, oy=(PH-totH)/2;
+  for(let r=0;r<L.r;r++)for(let c=0;c<L.c;c++){
+    const d=document.createElement('div');
+    d.style.left=(ox+c*(L.iw+L.g))*s+'%';
+    d.style.top=(oy+r*(L.ih+L.g))/PH*100+'%';
+    d.style.width=L.iw*s+'%';
+    d.style.height=L.ih/PH*100+'%';
+    p.appendChild(d);
+  }
+  $('go').disabled=!img;
+}
+
+$('f').addEventListener('change',e=>{
+  const file=e.target.files[0]; if(!file) return;
+  const url=URL.createObjectURL(file), im=new Image();
+  im.onload=()=>{
+    img=im;
+    $('ph').innerHTML='';
+    const t=document.createElement('img'); t.src=url; $('ph').appendChild(t);
+    $('ph').appendChild(document.createTextNode('タップして変更'));
+    update();
+  };
+  im.src=url;
+});
+['w','h','m','g','rot','cut'].forEach(i=>$(i).addEventListener('input',update));
+
+function render(L){
+  // resample to ~300dpi, rotate if needed
+  const pxmm=300/25.4;
+  const cw=Math.round(L.w*pxmm), ch=Math.round(L.h*pxmm);
+  const cv=document.createElement('canvas');
+  const ctx=cv.getContext('2d');
+  if(L.rotated){
+    cv.width=ch; cv.height=cw;
+    ctx.translate(ch,0); ctx.rotate(Math.PI/2);
+  }else{cv.width=cw; cv.height=ch;}
+  ctx.imageSmoothingQuality='high';
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,cw,ch);
+  const k=Math.min(cw/img.naturalWidth,ch/img.naturalHeight);
+  const dw=img.naturalWidth*k, dh=img.naturalHeight*k;
+  ctx.drawImage(img,(cw-dw)/2,(ch-dh)/2,dw,dh);
+  return cv.toDataURL('image/jpeg',0.92);
+}
+
+$('go').addEventListener('click',async()=>{
+  const L=layout(); if(!L||!L.n||!img) return;
+  const msg=$('msg'); msg.textContent='生成中…'; $('go').disabled=true;
+  try{
+    await new Promise(r=>setTimeout(r,30));
+    const {jsPDF}=window.jspdf;
+    const pdf=new jsPDF({unit:'mm',format:'a4',orientation:'portrait'});
+    const data=render(L);
+    const totW=L.c*L.iw+(L.c-1)*L.g, totH=L.r*L.ih+(L.r-1)*L.g;
+    const ox=(PW-totW)/2, oy=(PH-totH)/2;
+    pdf.setDrawColor(120); pdf.setLineWidth(0.1);
+    for(let r=0;r<L.r;r++)for(let c=0;c<L.c;c++){
+      const x=ox+c*(L.iw+L.g), y=oy+r*(L.ih+L.g);
+      pdf.addImage(data,'JPEG',x,y,L.iw,L.ih);
+      if($('cut').checked) pdf.rect(x,y,L.iw,L.ih);
+    }
+    const blob=pdf.output('blob');
+    const name=`tiles_${$('w').value}x${$('h').value}cm.pdf`;
+    let dl=null;
+    try{ dl=window.claude?await window.claude.use('downloads'):null; }catch(e){}
+    if(dl){
+      try{
+        const res=await dl.save({filename:name,data:blob});
+        msg.textContent=res.status==='saved'?'保存しました ✅':'完了しました';
+      }catch(e){
+        msg.textContent=e&&e.code==='declined'?'保存をキャンセルしました':'保存できませんでした（'+((e&&e.code)||'error')+'）';
+      }
+    }else{
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob); a.download=name; a.click();
+      msg.textContent='ダウンロードを開始しました';
+    }
+  }catch(e){
+    msg.textContent='エラー: '+e.message;
+  }
+  $('go').disabled=false;
+});
+
+update();
+</script>
+</body>
+</html>
